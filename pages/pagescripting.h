@@ -41,6 +41,7 @@ public:
     explicit PageScripting(QWidget *parent = nullptr);
     ~PageScripting();
 
+    void saveStateToSettings();
     VescInterface *vesc() const;
     void setVesc(VescInterface *vesc);
     void reloadParams();
@@ -55,6 +56,7 @@ public slots:
 private slots:
     void on_runButton_clicked();
     void on_stopButton_clicked();
+    void on_reloadAndRunButton_clicked();
     void on_runWindowButton_clicked();
     void on_fullscreenButton_clicked();
     void on_openRecentButton_clicked();

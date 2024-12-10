@@ -135,6 +135,7 @@ signals:
     void bmsValuesRx(BMS_VALUES val);
     void customConfigChunkRx(int confInd, int lenConf, int ofsConf, QByteArray data);
     void customConfigRx(int confInd, QByteArray data);
+    void customConfigAckReceived(int confId);
     void pswStatusRx(PSW_STATUS stat);
     void qmluiHwRx(int lenQml, int ofsQml, QByteArray data);
     void qmluiAppRx(int lenQml, int ofsQml, QByteArray data);
@@ -192,6 +193,7 @@ public slots:
     void setAppConfNoStore();
     void detectMotorParam(double current, double min_rpm, double low_duty);
     void reboot();
+    void shutdown();
     void sendAlive();
     void getDecodedPpm();
     void getDecodedAdc();
@@ -273,7 +275,7 @@ public slots:
     void lispStreamCode(QByteArray data, quint32 offset, quint32 totLen, qint8 mode);
     void lispEraseCode(int size);
     void lispSetRunning(bool running);
-    void lispGetStats();
+    void lispGetStats(bool all);
     void lispSendReplCmd(QString str);
 
     void setBleName(QString name);
@@ -317,7 +319,7 @@ private:
     int mTimeoutDecAdc;
     int mTimeoutDecChuk;
     int mTimeoutPingCan;
-    int mTimeoutCustomConf;
+    QVector<int> mTimeoutCustomConf;
     int mTimeoutBmsVal;
     int mTimeoutStats;
 

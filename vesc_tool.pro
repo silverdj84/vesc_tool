@@ -5,16 +5,19 @@
 #-------------------------------------------------
 
 # Version
-VT_VERSION = 6.05
+VT_VERSION = 6.06
 VT_INTRO_VERSION = 1
-VT_CONFIG_VERSION = 2
+VT_CONFIG_VERSION = 4
 
 # Set to 0 for stable versions and to test version number for development versions.
-VT_IS_TEST_VERSION = 1
+VT_IS_TEST_VERSION = 2
 
-VT_ANDROID_VERSION_ARMV7 = 134
-VT_ANDROID_VERSION_ARM64 = 135
-VT_ANDROID_VERSION_X86 = 136
+# GIT commit
+VT_GIT_COMMIT = $$system(git rev-parse --short=8 HEAD)
+
+VT_ANDROID_VERSION_ARMV7 = 162
+VT_ANDROID_VERSION_ARM64 = 163
+VT_ANDROID_VERSION_X86 = 164
 
 VT_ANDROID_VERSION = $$VT_ANDROID_VERSION_X86
 
@@ -25,6 +28,7 @@ DEFINES += VT_VERSION=$$VT_VERSION
 DEFINES += VT_INTRO_VERSION=$$VT_INTRO_VERSION
 DEFINES += VT_CONFIG_VERSION=$$VT_CONFIG_VERSION
 DEFINES += VT_IS_TEST_VERSION=$$VT_IS_TEST_VERSION
+DEFINES += VT_GIT_COMMIT=$$VT_GIT_COMMIT
 QT_LOGGING_RULES="qt.qml.connections=false"
 #CONFIG += qtquickcompiler
 
@@ -247,6 +251,12 @@ HEADERS  += mainwindow.h \
     tcpserversimple.h \
     hexfile.h
 
+unix: {
+!ios: {
+    HEADERS += systemcommandexecutor.h
+}
+}
+
 FORMS    += mainwindow.ui \
     boardsetupwindow.ui \
     parametereditor.ui \
@@ -266,6 +276,9 @@ include(heatshrink/heatshrink.pri)
 include(QCodeEditor/qcodeeditor.pri)
 include(esp32/esp32.pri)
 include(display_tool/display_tool.pri)
+include(qmarkdowntextedit/qmarkdowntextedit.pri)
+include(maddy/maddy.pri)
+include(minimp3/minimp3.pri)
 
 RESOURCES += res.qrc \
     res_custom_module.qrc \
@@ -273,10 +286,11 @@ RESOURCES += res.qrc \
     res_qml.qrc
 RESOURCES += res_config.qrc
 
+RESOURCES += res_fw_bms.qrc
+RESOURCES += res/firmwares_esp/res_fw_esp.qrc
+
 !exclude_fw {
-    RESOURCES += res_fw_bms.qrc
     RESOURCES += res/firmwares/res_fw.qrc
-    RESOURCES += res/firmwares_esp/res_fw_esp.qrc
 }
 
 build_original {

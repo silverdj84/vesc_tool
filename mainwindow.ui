@@ -535,10 +535,10 @@
          <string> A</string>
         </property>
         <property name="minimum">
-         <double>-500.000000000000000</double>
+         <double>-5000.000000000000000</double>
         </property>
         <property name="maximum">
-         <double>500.000000000000000</double>
+         <double>5000.000000000000000</double>
         </property>
         <property name="singleStep">
          <double>0.500000000000000</double>
@@ -670,6 +670,7 @@
     <addaction name="actionTerminalClear"/>
     <addaction name="separator"/>
     <addaction name="actionReboot"/>
+    <addaction name="actionShutdown"/>
    </widget>
    <widget class="QMenu" name="menuCommands">
     <property name="font">
@@ -756,7 +757,15 @@
     <string>Reboot</string>
    </property>
    <property name="toolTip">
-    <string>Reboot</string>
+    <string>Reboot via CPU reset</string>
+   </property>
+  </action>
+  <action name="actionShutdown">
+   <property name="text">
+    <string>Shutdown</string>
+   </property>
+   <property name="toolTip">
+    <string>Shutdown (for controllers with auto-shutdown support only)</string>
    </property>
   </action>
   <action name="actionCanFwd">

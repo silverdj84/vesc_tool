@@ -29,6 +29,8 @@
 #include "codeloader.h"
 #include "configparam.h"
 #include "utility.h"
+#include "heatshrink/heatshrinkif.h"
+#include "minimp3/qminimp3.h"
 
 #include <QApplication>
 #include <QStyleFactory>
@@ -49,6 +51,7 @@
 
 #ifdef Q_OS_LINUX
 #include <signal.h>
+#include <systemcommandexecutor.h>
 #endif
 
 #ifndef USE_MOBILE
@@ -92,7 +95,22 @@ static void showHelp()
     qDebug() << "--canFwd [canId] : Can ID for CAN forwarding";
     qDebug() << "--getMcConf [confPath] : Connect and read motor configuration and store the XML to confPath.";
     qDebug() << "--setMcConf [confPath] : Connect and write motor configuration XML from confPath.";
+    qDebug() << "--getAppConf [confPath] : Connect and read app configuration and store the XML to confPath.";
+    qDebug() << "--setAppConf [confPath] : Connect and write app configuration XML from confPath.";
+    qDebug() << "--getCustomConf [confPath] : Connect and read custom configuration 1 and store the XML to confPath.";
+    qDebug() << "--setCustomConf [confPath] : Connect and write custom configuration 1 XML from confPath.";
     qDebug() << "--debugOutFile [path] : Print debug output to file with path.";
+    qDebug() << "--uploadLisp [path] : Upload lisp-script.";
+    qDebug() << "--eraseLisp : Erase lisp-script.";
+    qDebug() << "--uploadFirmware [path] : Upload firmware-file from path.";
+    qDebug() << "--uploadBootloaderBuiltin : Upload bootloader from generic included bootloaders.";
+    qDebug() << "--queryDeviceFwParams : Connect and print out device fw parameters.";
+    qDebug() << "--writeFileToSdCard [fileLocal:pathSdcard] : Write file to SD-card.";
+    qDebug() << "--packFirmware [fileIn:fileOut] : Pack firmware-file for compatibility with the bootloader. ";
+    qDebug() << "--packLisp [fileIn:fileOut] : Pack lisp-file and the included imports.";
+    qDebug() << "--bridgeAppData : Send app data (such as data from send-data in lisp) to stdout.";
+    qDebug() << "--offscreen : Use offscreen QPA so that X is not required for the CLI-mode.";
+    qDebug() << "--downloadPackageArchive : Download package archive to application data directory.";
 }
 
 #ifdef Q_OS_LINUX
@@ -219,6 +237,7 @@ int main(int argc, char *argv[])
     qmlRegisterType<Commands>("Vedder.vesc.commands", 1, 0, "Commands");
     qmlRegisterType<ConfigParams>("Vedder.vesc.configparams", 1, 0, "ConfigParams");
     qmlRegisterType<FwHelper>("Vedder.vesc.fwhelper", 1, 0, "FwHelper");
+    qmlRegisterType<Esp32Flash>("Vedder.vesc.esp32flash", 1, 0, "Esp32Flash");
     qmlRegisterType<TcpServerSimple>("Vedder.vesc.tcpserversimple", 1, 0, "TcpServerSimple");
     qmlRegisterType<UdpServerSimple>("Vedder.vesc.udpserversimple", 1, 0, "UdpServerSimple");
     qmlRegisterType<Vesc3dItem>("Vedder.vesc.vesc3ditem", 1, 0, "Vesc3dItem");
@@ -226,6 +245,10 @@ int main(int argc, char *argv[])
     qmlRegisterType<LogReader>("Vedder.vesc.logreader", 1, 0, "LogReader");
     qmlRegisterType<TcpHub>("Vedder.vesc.tcphub", 1, 0, "TcpHub");
     qmlRegisterType<CodeLoader>("Vedder.vesc.codeloader", 1, 0, "CodeLoader");
+    qmlRegisterType<QMiniMp3>("Vedder.vesc.qminimp3", 1, 0, "QMiniMp3");
+#ifdef Q_OS_LINUX
+    qmlRegisterType<SystemCommandExecutor>("Vedder.vesc.syscmd", 1, 0, "SysCmd");
+#endif
 
     qRegisterMetaType<VSerialInfo_t>();
     qRegisterMetaType<MCCONF_TEMP>();
@@ -241,6 +264,7 @@ int main(int argc, char *argv[])
     qRegisterMetaType<TCP_HUB_DEVICE>();
     qRegisterMetaType<ConfigParam>();
     qRegisterMetaType<GNSS_DATA>();
+    qRegisterMetaType<MiniMp3Dec>();
 
 #ifdef USE_MOBILE
 #ifndef DEBUG_BUILD
@@ -278,7 +302,25 @@ int main(int argc, char *argv[])
     int canFwd = -1;
     QString getMcConfPath = "";
     QString setMcConfPath = "";
+    QString getAppConfPath = "";
+    QString setAppConfPath = "";
+    QString getCustomConfPath = "";
+    QString setCustomConfPath = "";
     QSize qmlWindowSize = QSize(-1, -1);
+    QString lispPath = "";
+    bool eraseLisp = false;
+    QString firmwarePath = "";
+    bool uploadBootloaderBuiltin = false;
+    bool queryDeviceFwParams = false;
+    QString fwPackIn = "";
+    QString fwPackOut = "";
+    QString fileForSdIn = "";
+    QString fileForSdOut = "";
+    QString lispPackIn = "";
+    QString lispPackOut = "";
+    bool bridgeAppData = false;
+    bool offscreen = false;
+    bool downloadPackageArchive = false;
 
     // Arguments can be hard-coded in a build like this:
 //    qmlWindowSize = QSize(400, 800);
@@ -475,6 +517,93 @@ int main(int argc, char *argv[])
             }
         }
 
+        if (str == "--getAppConf") {
+            if ((i + 1) < args.size()) {
+                i++;
+                getAppConfPath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--setAppConf") {
+            if ((i + 1) < args.size()) {
+                i++;
+                setAppConfPath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--getCustomConf") {
+            if ((i + 1) < args.size()) {
+                i++;
+                getCustomConfPath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--setCustomConf") {
+            if ((i + 1) < args.size()) {
+                i++;
+                setCustomConfPath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--uploadLisp") {
+            if ((i + 1) < args.size()) {
+                i++;
+                lispPath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--eraseLisp") {
+            eraseLisp = true;
+            found = true;
+        }
+
+        if (str == "--uploadFirmware") {
+            if ((i + 1) < args.size()) {
+                i++;
+                firmwarePath = args.at(i);
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No path specified";
+                return 1;
+            }
+        }
+
+        if (str == "--uploadBootloaderBuiltin") {
+            uploadBootloaderBuiltin = true;
+            found = true;
+        }
+
+        if (str == "--queryDeviceFwParams") {
+            queryDeviceFwParams = true;
+            found = true;
+        }
+
         if (str == "--debugOutFile") {
             if ((i + 1) < args.size()) {
                 i++;
@@ -492,6 +621,81 @@ int main(int argc, char *argv[])
             }
         }
 
+        if (str == "--writeFileToSdCard") {
+            if ((i + 1) < args.size()) {
+                i++;
+                auto p = args.at(i).split(":");
+                if (p.size() == 2) {
+                    fileForSdIn = p.at(0);
+                    fileForSdOut = p.at(1);
+                } else {
+                    qCritical() << "Invalid paths specified";
+                    return 1;
+                }
+
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No paths specified";
+                return 1;
+            }
+        }
+
+        if (str == "--packFirmware") {
+            if ((i + 1) < args.size()) {
+                i++;
+                auto p = args.at(i).split(":");
+                if (p.size() == 2) {
+                    fwPackIn = p.at(0);
+                    fwPackOut = p.at(1);
+                } else {
+                    qCritical() << "Invalid paths specified";
+                    return 1;
+                }
+
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No paths specified";
+                return 1;
+            }
+        }
+
+        if (str == "--packLisp") {
+            if ((i + 1) < args.size()) {
+                i++;
+                auto p = args.at(i).split(":");
+                if (p.size() == 2) {
+                    lispPackIn = p.at(0);
+                    lispPackOut = p.at(1);
+                } else {
+                    qCritical() << "Invalid paths specified";
+                    return 1;
+                }
+
+                found = true;
+            } else {
+                i++;
+                qCritical() << "No paths specified";
+                return 1;
+            }
+        }
+
+        if (str == "--bridgeAppData") {
+            bridgeAppData = true;
+            found = true;
+        }
+
+        if (str == "--offscreen") {
+            offscreen = true;
+            found = true;
+        }
+
+        if (str == "--downloadPackageArchive") {
+            downloadPackageArchive = true;
+            found = true;
+        }
+
         if (!found) {
             if (dash) {
                 qCritical() << "At least one of the flags is invalid:" << str;
@@ -502,6 +706,14 @@ int main(int argc, char *argv[])
             showHelp();
             return 1;
         }
+    }
+
+    if (downloadPackageArchive) {
+        QCoreApplication appTmp(argc, argv);
+        CodeLoader loader;
+        qDebug() << "Downloading package archive...";
+        loader.downloadPackageArchive();
+        qDebug() << "Package archive downloaded!";
     }
 
     if (!xmlCodePath.isEmpty()) {
@@ -530,6 +742,107 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    if (!fwPackIn.isEmpty()) {
+        if (!fwPackIn.endsWith(".bin", Qt::CaseInsensitive)) {
+            qWarning() << "Warning: Unexpected file extension for a firmware-file.";
+        }
+
+        QFile fIn(fwPackIn);
+        if (!fIn.open(QIODevice::ReadOnly)) {
+            qWarning() << QString("Could not open %1 for reading.").arg(fwPackIn);
+            return 1;
+        }
+
+        QByteArray newFirmware = Utility::removeFirmwareHeader(fIn.readAll());
+        fIn.close();
+
+        QFile fOut(fwPackOut);
+        if (!fOut.open(QIODevice::WriteOnly)) {
+            qWarning() << QString("Could not open %1 for writing.").arg(fwPackOut);
+            return 1;
+        }
+
+        int szTot = newFirmware.size();
+
+        bool useHeatshrink = false;
+        if (szTot > 393208 && szTot < 700000) { // If fw is much larger it is probably for the esp32
+            useHeatshrink = true;
+            qDebug() << "Firmware is big, using heatshrink compression library";
+            int szOld = szTot;
+            HeatshrinkIf hs;
+            newFirmware = hs.encode(newFirmware);
+            szTot = newFirmware.size();
+            qDebug() << "New size:" << szTot << "(" << 100.0 * (double)szTot / (double)szOld << "%)";
+
+            if (szTot > 393208) {
+                qWarning() << "Firmware too big" <<
+                            "The firmware you are trying to upload is too large for the bootloader even after compression.";
+                return -1;
+            }
+        }
+
+        if (szTot > 5000000) {
+            qWarning() << "Firmware too big" <<
+                        "The firmware you are trying to upload is unreasonably "
+                        "large, most likely it is an invalid file";
+            return -2;
+        }
+
+        quint16 crc = Packet::crc16((const unsigned char*)newFirmware.constData(),
+                                    uint32_t(newFirmware.size()));
+        VByteArray sizeCrc;
+        if (useHeatshrink) {
+            uint32_t szShift = 0xCC;
+            szShift <<= 24;
+            szShift |= szTot;
+            sizeCrc.vbAppendUint32(szShift);
+        } else {
+            sizeCrc.vbAppendUint32(szTot);
+        }
+        sizeCrc.vbAppendUint16(crc);
+        newFirmware.prepend(sizeCrc);
+        fOut.write(newFirmware);
+        fOut.close();
+
+        qDebug() << "Done!";
+        return 0;
+    }
+
+    if (!lispPackIn.isEmpty()) {
+        if (!lispPackIn.endsWith(".lisp", Qt::CaseInsensitive)) {
+            qWarning() << "Warning: Unexpected file extension for a lisp-file.";
+        }
+
+        QFile fIn(lispPackIn);
+        if (!fIn.open(QIODevice::ReadOnly)) {
+            qWarning() << QString("Could not open %1 for reading.").arg(lispPackIn);
+            return 1;
+        }
+
+        QFile fOut(lispPackOut);
+        if (!fOut.open(QIODevice::WriteOnly)) {
+            qWarning() << QString("Could not open %1 for writing.").arg(lispPackOut);
+            return 1;
+        }
+
+        CodeLoader loader;
+        QFileInfo fi(fIn);
+        VByteArray vb = loader.lispPackImports(fIn.readAll(), fi.canonicalPath());
+        fIn.close();
+
+        quint16 crc = Packet::crc16((const unsigned char*)vb.constData(), uint32_t(vb.size()));
+        VByteArray data;
+        data.vbAppendUint32(vb.size() - 2);
+        data.vbAppendUint16(crc);
+        data.append(vb);
+
+        fOut.write(data);
+        fOut.close();
+
+        qDebug() << "Done!";
+        return 0;
+    }
+
     if (!pkgArgs.isEmpty()) {
         if (pkgArgs.size() < 4) {
             qWarning() << "Invalid arguments";
@@ -538,7 +851,7 @@ int main(int argc, char *argv[])
 
         CodeLoader loader;
         QString pkgPath = pkgArgs.at(0);
-        QString lispPath = pkgArgs.at(1);
+        lispPath = pkgArgs.at(1);
         QString qmlPath = pkgArgs.at(2);
         bool isFullscreen = pkgArgs.at(3).toInt();
 
@@ -557,17 +870,12 @@ int main(int argc, char *argv[])
                 return 1;
             }
 
-            qputenv("QT_QPA_PLATFORM", "offscreen");
-            QApplication a(argc, argv);
-            addFonts();
-
-            QTextDocument d;
-            d.setMarkdown(QString::fromUtf8(f.readAll()));
-
+            QString desc = QString::fromUtf8(f.readAll());
             f.close();
 
             pkg.name = name;
-            pkg.description = d.toHtml();
+            pkg.description_md = desc;
+            pkg.description = Utility::md2html(desc);
         } else {
             QFile f(pkgPath);
             if (!f.open(QIODevice::ReadOnly)) {
@@ -581,12 +889,6 @@ int main(int argc, char *argv[])
             qDebug() << "Opened package" << pkg.name;
         }
 
-        QFile file(pkgPath);
-        if (!file.open(QIODevice::WriteOnly)) {
-            qWarning() << QString("Could not open %1 for writing.").arg(pkgPath);
-            return 1;
-        }
-
         if (!lispPath.isEmpty()) {
             QFile f(lispPath);
             if (!f.open(QIODevice::ReadOnly)) {
@@ -596,6 +898,11 @@ int main(int argc, char *argv[])
 
             QFileInfo fi(f);
             pkg.lispData = loader.lispPackImports(f.readAll(), fi.canonicalPath());
+            // Empty array means an error. Otherwise, CodeLoader.lispPackImports() always returns data.
+            if (pkg.lispData.isEmpty()) {
+                qWarning() << "Errors when processing lisp imports.";
+                return 1;
+            }
             f.close();
 
             qDebug() << "Read lisp script done";
@@ -613,6 +920,12 @@ int main(int argc, char *argv[])
             f.close();
 
             qDebug() << "Read qml script done";
+        }
+
+        QFile file(pkgPath);
+        if (!file.open(QIODevice::WriteOnly)) {
+            qWarning() << QString("Could not open %1 for writing.").arg(pkgPath);
+            return 1;
         }
 
         file.write(loader.packVescPackage(pkg));
@@ -692,87 +1005,406 @@ int main(int argc, char *argv[])
         }
     });
 
-    if (!getMcConfPath.isEmpty() || !setMcConfPath.isEmpty()) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+    bool isMcConf = !getMcConfPath.isEmpty() || !setMcConfPath.isEmpty();
+    bool isAppConf = !getAppConfPath.isEmpty() || !setAppConfPath.isEmpty();
+    bool isCustomConf = !getCustomConfPath.isEmpty() || !setCustomConfPath.isEmpty();
+
+    if (isMcConf || isAppConf || isCustomConf || !lispPath.isEmpty() ||
+            eraseLisp || !firmwarePath.isEmpty() || uploadBootloaderBuiltin ||
+            queryDeviceFwParams || !fileForSdIn.isEmpty() || bridgeAppData) {
+        if (offscreen) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+        }
         app = new QCoreApplication(argc, argv);
         vesc = new VescInterface;
+        vesc->setIgnoreCustomConfigs(!isCustomConf);
+
         vesc->fwConfig()->loadParamsXml("://res/config/fw.xml");
         Utility::configLoadLatest(vesc);
 
+        if (bridgeAppData) {
+            QObject::connect(vesc->commands(), &Commands::customAppDataReceived, [] (QByteArray data) {
+                fprintf(stdout, "%s", data.constData());
+                fflush(stdout);
+            });
+        }
+
+        QObject::connect(vesc, &VescInterface::statusMessage, [firmwarePath]
+                         (const QString &msg, bool isGood) {
+            if (isGood) {
+                qDebug() << msg;
+            } else {
+                // Firmware upload tends to end with a serial port error when jumping to the bootloader, do not print it
+                if (firmwarePath.isEmpty() || !msg.startsWith("Serial port error")) {
+                    qWarning() << msg;
+                }
+            }
+        });
+
+        QObject::connect(vesc, &VescInterface::messageDialog, []
+                         (const QString &title, const QString &msg, bool isGood, bool richText) {
+            (void)richText;
+            if (isGood) {
+                qDebug() << title << ":" << msg;
+            } else {
+                qWarning() << title << ":" << msg;
+            }
+        });
+
+        QObject::connect(vesc, &VescInterface::fwUploadStatus, []
+                         (const QString &status, double progress, bool isOngoing) {
+            (void)status;
+            (void)isOngoing;
+
+            static double progress_last = 0.0;
+            progress *= 100.0;
+
+            if (progress < progress_last) {
+                progress_last = 0.0;
+            }
+
+            if (progress > 0.5 && (progress - progress_last) >= 1.0) {
+                fprintf(stderr, "%s", QString("\rUpload progress: %1%").arg(floor(progress)).toLatin1().data());
+                progress_last = progress;
+            }
+        });
+
+        QObject::connect(vesc->commands(), &Commands::fileProgress, []
+                         (int32_t prog, int32_t tot, double percentage, double bytesPerSec) {
+            (void)prog;
+            (void)tot;
+
+            fprintf(stderr, "%s", QString("\rUpload progress: %1% (%2 kbps)").
+                    arg(floor(percentage)).arg(bytesPerSec / 1024).toLatin1().data());
+        });
+
         QTimer::singleShot(10, [&]() {
+            int exitCode = 0;
             bool ok = false;
             if (vescPort.isEmpty()) {
                 ok = vesc->autoconnect();
             } else {
                 ok = vesc->connectSerial(vescPort);
+                if (ok) {
+                    ok = Utility::waitSignal(vesc, SIGNAL(fwRxChanged(bool, bool)), 1000);
+                    if (!ok) {
+                        qWarning() << "Could not read firmware version";
+                    }
+                }
             }
 
             if (ok) {
                 qDebug() << "Connected";
+                Utility::sleepWithEventLoop(100);
 
                 if (canFwd >= 0) {
                     vesc->commands()->setSendCan(true, canFwd);
                 }
 
-                auto res = Utility::waitSignal(vesc, SIGNAL(customConfigLoadDone()), 4000);
-                if (res) {
-                    ConfigParams *p = vesc->mcConfig();
-                    vesc->commands()->getMcconf();
-                    res = Utility::waitSignal(p, SIGNAL(updated()), 4000);
-                    if (res) {
-                        if (!setMcConfPath.isEmpty()) {
-                            res = p->loadXml(setMcConfPath, "MCConfiguration");
+                CodeLoader loader;
+                loader.setVesc(vesc);
 
-                            if (res) {
-                                vesc->commands()->setMcconf(false);
-                                res = Utility::waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
+                if (eraseLisp) {
+                    if (loader.lispErase(16)) {
+                        qDebug() << "Lisp erase OK!";
+                    } else {
+                        qWarning() << "Could not erase lisp";
+                        exitCode = -10;
+                    }
+                }
 
-                                if (res) {
-                                    qDebug() << "Wrote XML from" << setMcConfPath;
-                                    qApp->exit();
-                                } else {
-                                    qWarning() << "Could not write config";
-                                    qApp->exit(-4);
-                                }
+                if (!lispPath.isEmpty()) {
+                    QFile f(lispPath);
+                    if (f.open(QIODevice::ReadOnly)) {
+                        QFileInfo fi(f);
+                        VByteArray lispData = loader.lispPackImports(f.readAll(), fi.canonicalPath());
+                        f.close();
 
+                        if (!lispData.isEmpty()) {
+                            bool ok = loader.lispErase(lispData.size() + 100);
+                            if (ok) {
+                                ok = loader.lispUpload(lispData);
                             } else {
-                                qWarning() << "Could not load XML from" << setMcConfPath;
-                                qApp->exit(-3);
+                                qWarning() << "Could not erase lisp";
+                                exitCode = -10;
+                            }
+                            if (ok) {
+                                qDebug() << "Lisp upload OK!";
+                                vesc->commands()->lispSetRunning(1);
+                                Utility::sleepWithEventLoop(100);
+                            } else {
+                                qWarning() << "Could not upload lisp";
+                                exitCode = -11;
                             }
                         } else {
-                            res = p->saveXml(getMcConfPath, "MCConfiguration");
+                            qWarning() << "Empty or invalid lisp-file.";
+                            exitCode = -12;
+                        }
+                    } else {
+                        qWarning() << "Could not open lisp file for reading.";
+                        exitCode = -13;
+                    }
+                }
+
+                if (!fileForSdIn.isEmpty()) {
+                    QFile f(fileForSdIn);
+                    QFileInfo fi(f);
+                    if (f.open(QIODevice::ReadOnly)) {
+                        QFileInfo fi(f);
+                        vesc->commands()->fileBlockMkdir(fileForSdOut);
+                        QString target = fileForSdOut + "/" + fi.fileName();
+                        if (vesc->commands()->fileBlockWrite(target.replace("//", "/"), f.readAll())) {
+                            qDebug() << "Done!";
+                        } else {
+                            qWarning() << "Could not write file";
+                            exitCode = -51;
+                        }
+
+                        f.close();
+                    } else {
+                        qWarning() << "Could not open file for reading.";
+                        exitCode = -50;
+                    }
+                }
+
+                if (isMcConf || isAppConf || isCustomConf || queryDeviceFwParams) {
+                    bool res = vesc->customConfigRxDone();
+                    if (!res) {
+                        res = Utility::waitSignal(vesc, SIGNAL(customConfigLoadDone()), 4000);
+                    }
+
+                    if (res) {
+                        if (isMcConf) {
+                            ConfigParams *p = vesc->mcConfig();
+                            vesc->commands()->getMcconf();
+                            res = Utility::waitSignal(p, SIGNAL(updated()), 4000);
 
                             if (res) {
-                                qDebug() << "Saved XML to" << getMcConfPath;
-                                qApp->exit();
+                                if (!setMcConfPath.isEmpty()) {
+                                    res = p->loadXml(setMcConfPath, "MCConfiguration");
+
+                                    if (res) {
+                                        vesc->commands()->setMcconf(false);
+                                        res = Utility::waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
+
+                                        if (res) {
+                                            qDebug() << "Wrote XML from" << setMcConfPath;
+                                        } else {
+                                            qWarning() << "Could not write config";
+                                            exitCode = -4;
+                                        }
+                                    } else {
+                                        qWarning() << "Could not load XML from" << setMcConfPath;
+                                        exitCode = -3;
+                                    }
+                                } else {
+                                    res = p->saveXml(getMcConfPath, "MCConfiguration");
+
+                                    if (res) {
+                                        qDebug() << "Saved XML to" << getMcConfPath;
+                                    } else {
+                                        qWarning() << "Could not save XML";
+                                        exitCode = -3;
+                                    }
+                                }
                             } else {
-                                qWarning() << "Could not save XML";
-                                qApp->exit(-3);
+                                qWarning() << "Could not load config";
+                                exitCode = -2;
+                            }
+                        }
+
+                        if (isAppConf) {
+                            ConfigParams *p = vesc->appConfig();
+                            vesc->commands()->getAppConf();
+                            res = Utility::waitSignal(p, SIGNAL(updated()), 4000);
+
+                            if (res) {
+                                if (!setAppConfPath.isEmpty()) {
+                                    res = p->loadXml(setAppConfPath, "APPConfiguration");
+
+                                    if (res) {
+                                        vesc->commands()->setAppConf();
+                                        res = Utility::waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
+
+                                        if (res) {
+                                            qDebug() << "Wrote XML from" << setAppConfPath;
+                                        } else {
+                                            qWarning() << "Could not write config";
+                                            exitCode = -4;
+                                        }
+                                    } else {
+                                        qWarning() << "Could not load XML from" << setAppConfPath;
+                                        exitCode = -3;
+                                    }
+                                } else {
+                                    res = p->saveXml(getAppConfPath, "APPConfiguration");
+
+                                    if (res) {
+                                        qDebug() << "Saved XML to" << getAppConfPath;
+                                    } else {
+                                        qWarning() << "Could not save XML";
+                                        exitCode = -3;
+                                    }
+                                }
+                            } else {
+                                qWarning() << "Could not load config";
+                                exitCode = -2;
+                            }
+                        }
+
+                        if (isCustomConf) {
+                            ConfigParams *p = vesc->customConfig(0);
+                            vesc->commands()->customConfigGet(0, false);
+                            res = Utility::waitSignal(p, SIGNAL(updated()), 4000);
+
+                            if (res) {
+                                if (!setCustomConfPath.isEmpty()) {
+                                    res = p->loadXml(setCustomConfPath, "CustomConfiguration");
+
+                                    if (res) {
+                                        vesc->commands()->customConfigSet(0, p);
+                                        res = Utility::waitSignal(vesc->commands(), SIGNAL(ackReceived(QString)), 4000);
+
+                                        if (res) {
+                                            qDebug() << "Wrote XML from" << setCustomConfPath;
+                                        } else {
+                                            qWarning() << "Could not write config";
+                                            exitCode = -4;
+                                        }
+                                    } else {
+                                        qWarning() << "Could not load XML from" << setCustomConfPath;
+                                        exitCode = -3;
+                                    }
+                                } else {
+                                    res = p->saveXml(getCustomConfPath, "CustomConfiguration");
+
+                                    if (res) {
+                                        qDebug() << "Saved XML to" << getCustomConfPath;
+                                    } else {
+                                        qWarning() << "Could not save XML";
+                                        exitCode = -3;
+                                    }
+                                }
+                            } else {
+                                qWarning() << "Could not load config";
+                                exitCode = -2;
                             }
                         }
                     } else {
                         qWarning() << "Could not load config";
-                        qApp->exit(-2);
+                        exitCode = -1;
                     }
-                } else {
-                    qWarning() << "Could not load config";
-                    qApp->exit(-1);
+                }
+
+                if (uploadBootloaderBuiltin) {
+                    FW_RX_PARAMS params = vesc->getLastFwRxParams();
+                    QString path = "";
+
+                    switch (params.hwType) {
+                    case HW_TYPE_VESC:
+                        path = "://res/bootloaders/generic.bin";
+                        break;
+
+                    case HW_TYPE_VESC_BMS:
+                        path = "://res/bootloaders_bms/generic.bin";
+                        break;
+
+                    case HW_TYPE_CUSTOM_MODULE:
+                        QByteArray endEsp;
+                        endEsp.append('\0');
+                        endEsp.append('\0');
+                        endEsp.append('\0');
+                        endEsp.append('\0');
+
+                        if (!params.uuid.endsWith(endEsp)) {
+                            if (params.hw == "hm1") {
+                                path = "://res/bootloaders_bms/generic.bin";
+                            } else {
+                                path = "://res/bootloaders_custom_module/stm32g431/stm32g431.bin";
+                            }
+                        }
+                        break;
+                    }
+
+                    if (!path.isEmpty()) {
+                        QFile f(path);
+                        if (f.open(QIODevice::ReadOnly)) {
+                            auto fwData = f.readAll();
+                            qDebug() << "Erasing old bootloader...";
+                            if (vesc->fwUpload(fwData, true, false, false)) {
+                                fprintf(stderr, "\r\n");
+                                qDebug() << "Bootloader upload OK!";
+                            } else {
+                                qWarning() << "Bootloader upload failed.";
+                                exitCode = -20;
+                            }
+                        } else {
+                            qWarning() << "Could not open bootloader file for reading.";
+                            exitCode = -21;
+                        }
+                    } else {
+                        qWarning() << "No included bootloader found.";
+                        exitCode = -30;
+                    }
+                }
+
+                if (queryDeviceFwParams) {
+                    FW_RX_PARAMS params = vesc->getLastFwRxParams();
+
+                    QString fwStr;
+                    QString strUuid = Utility::uuid2Str(params.uuid, true);
+
+                    if (params.major >= 0) {
+                        fwStr = QString("FW: V%1.%2").arg(params.major).arg(params.minor, 2, 10, QLatin1Char('0'));
+                        if (!params.fwName.isEmpty()) {
+                            fwStr += " (" + params.fwName + ")";
+                        }
+
+                        if (!params.hw.isEmpty()) {
+                            fwStr += ", Hw: " + params.hw;
+                        }
+
+                        if (!strUuid.isEmpty()) {
+                            fwStr += ", UUID: " + strUuid;
+                        }
+
+                        fwStr += ", isTestFw: " + QString::number(params.isTestFw);
+                        fwStr += ", hwType: " + params.hwTypeStr();
+                        fwStr += ", hwConfCrc: " + QString::number(params.hwConfCrc);
+                    }
+                    qInfo() << fwStr;
+                }
+
+                if (!firmwarePath.isEmpty()) {
+                    QFile f(firmwarePath);
+                    if (f.open(QIODevice::ReadOnly)) {
+                        auto fwData = f.readAll();
+                        qDebug() << "Erasing firmware buffer...";
+                        if (vesc->fwUpload(fwData, false, false, false)) {
+                            fprintf(stderr, "\r\n");
+                            qDebug() << "Firmware upload OK!";
+                        } else {
+                            qWarning() << "Firmware upload failed.";
+                            exitCode = -20;
+                        }
+                    } else {
+                        qWarning() << "Could not open firmware file for reading.";
+                        exitCode = -21;
+                    }
                 }
             } else {
                 qWarning() << "Could not connect";
-                qApp->exit(-1);
+                exitCode = -1;
             }
-        });
 
-        QObject::connect(vesc, &VescInterface::statusMessage, [&](QString msg, bool isGood) {
-            if (isGood) {
-                qDebug() << msg;
-            } else  {
-                qWarning() << msg;
+            if (!bridgeAppData) {
+                qApp->exit(exitCode);
             }
         });
     } else if (useTcp) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        if (offscreen) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+        }
         app = new QCoreApplication(argc, argv);
         vesc = new VescInterface;
         vesc->fwConfig()->loadParamsXml("://res/config/fw.xml");
@@ -795,7 +1427,9 @@ int main(int argc, char *argv[])
             }
         });
     } else if (isTcpHub) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
+        if (offscreen) {
+            qputenv("QT_QPA_PLATFORM", "offscreen");
+        }
         app = new QCoreApplication(argc, argv);
         tcpHub = new TcpHub;
         if (tcpHub->start(tcpPort)) {
@@ -804,6 +1438,8 @@ int main(int argc, char *argv[])
             qCritical() << "Could not start TcpHub on port" << tcpPort;
             qApp->quit();
         }
+    } else if (downloadPackageArchive) {
+        return 0;
     } else {
         QApplication *a = new QApplication(argc, argv);
         app = a;

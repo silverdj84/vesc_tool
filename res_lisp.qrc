@@ -43,5 +43,17 @@
         <file>res/Lisp/Examples/event_custom_data.lisp</file>
         <file>res/Lisp/Examples/crc16_v2.lisp</file>
         <file>res/Lisp/Examples/speed_test_tak_q2.lisp</file>
+        <file>res/Lisp/Examples/log_vesc_tool.lisp</file>
+        <file>res/Lisp/Examples/fw_update.lisp</file>
+        <file>res/Lisp/Examples/lbm_update.lisp</file>
+        <file>res/Lisp/Examples/sort_test1.lisp</file>
+        <file>res/Lisp/Examples/sort_test2.lisp</file>
+        <file>res/Lisp/Examples/foc_melody.lisp</file>
+        <file>res/Lisp/Examples/play_mp3.lisp</file>
+        <file>res/Lisp/Examples/rgbled_demo.lisp</file>
+        <file>res/Lisp/Examples/speed_test_i64.lisp</file>
+        <file>res/Lisp/Examples/speed_test_strings.lisp</file>
+        <file>res/Lisp/Examples/str_find_any.lisp</file>
+        <file>res/Lisp/Examples/hfi_start_analyze.lisp</file>
     </qresource>
 </RCC>

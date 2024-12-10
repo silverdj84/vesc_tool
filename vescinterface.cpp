@@ -105,6 +105,10 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     mCanTmpFwdSendCanLast = false;
     mCanTmpFwdIdLast = -1;
 
+    mIgnoreCustomConfigs = false;
+
+    mFwSwapDone = false;
+
 #ifdef Q_OS_ANDROID
     QAndroidJniObject activity = QAndroidJniObject::callStaticObjectMethod(
                 "org/qtproject/qt5/android/QtNative", "activity", "()Landroid/app/Activity;");
@@ -232,6 +236,19 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
         }
     });
 
+    mTimerConfigUpdate = new QTimer(this);
+    mTimerConfigUpdate->setInterval(1000);
+    mTimerConfigUpdate->start();
+    connect(mTimerConfigUpdate, &QTimer::timeout, [this]() {
+        if (isPortConnected()) {
+            for (int i = 0;i < mCustomConfigs.size();i++) {
+                if (mCustomConfigs.at(i)->updateCnt() == 0) {
+                    mCommands->customConfigGet(i, false);
+                }
+            }
+        }
+    });
+
     mUdpServer = new UdpServerSimple(this);
     mUdpServer->setUsePacket(true);
     connect(mUdpServer->packet(), &Packet::packetReceived, [this](QByteArray &packet) {
@@ -296,6 +313,21 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
             cfg.customconf_xml_compressed = mSettings.value("customconf").toString();
             cfg.name = mSettings.value("name", QString("")).toString();
             mConfigurationBackups.insert(uuid, cfg);
+        }
+        mSettings.endArray();
+    }
+
+    {
+        int size = mSettings.beginReadArray("lastFwUuids");
+        for (int i = 0; i < size; ++i) {
+            mSettings.setArrayIndex(i);
+            QString uuidLocal = mSettings.value("uuidLocal", "").toString().toUpper();
+            QString uuidCan = mSettings.value("uuidCan", "").toString().toUpper();
+            int canId = mSettings.value("canId", -1).toInt();
+
+            if (!uuidLocal.isEmpty() && !uuidCan.isEmpty() && canId >= 0) {
+                mLastFwUuids[uuidLocal] = qMakePair(uuidCan, canId);
+            }
         }
         mSettings.endArray();
     }
@@ -535,6 +567,17 @@ VescInterface::VescInterface(QObject *parent) : QObject(parent)
     connect(mCommands, SIGNAL(customConfigRx(int,QByteArray)),
             this, SLOT(customConfigRx(int,QByteArray)));
 
+    connect(mCommands, &Commands::customConfigAckReceived, [this](int confId) {
+        ConfigParams *custConf = customConfig(confId);
+        QString name;
+        if (custConf) {
+            name = custConf->getLongName("hw_name");
+        } else {
+            name = tr("Custom config %1").arg(confId);
+        }
+        emit ackReceived(tr("%1 write OK").arg(name));
+    });
+
 #if VT_IS_TEST_VERSION
     QTimer::singleShot(1000, [this]() {
         emitMessageDialog("VESC Tool Test Version",
@@ -720,6 +763,21 @@ void VescInterface::storeSettings()
             mSettings.setValue("customconf", i.value().customconf_xml_compressed);
             mSettings.setValue("name", i.value().name);
             ind++;
+        }
+        mSettings.endArray();
+    }
+
+    mSettings.remove("lastFwUuids");
+    {
+        mSettings.beginWriteArray("lastFwUuids");
+        QMapIterator<QString, QPair<QString, int> > i(mLastFwUuids);
+        int ind = 0;
+        while (i.hasNext()) {
+            i.next();
+            mSettings.setArrayIndex(ind++);
+            mSettings.setValue("uuidLocal", i.key());
+            mSettings.setValue("uuidCan", i.value().first);
+            mSettings.setValue("canId", i.value().second);
         }
         mSettings.endArray();
     }
@@ -1266,7 +1324,7 @@ bool VescInterface::fwEraseNewApp(bool fwdCan, quint32 fwSize)
     };
 
     mCommands->eraseNewApp(fwdCan, fwSize, mLastFwParams.hwType, mLastFwParams.hw);
-    emit fwUploadStatus("Erasing buffer...", 0.0, true);
+    emit fwUploadStatus("Erasing buffer", 0.0, true);
     int erRes = waitEraseRes();
     if (erRes != 1) {
         QString msg = QString("Unknown failure: %1").arg(erRes);
@@ -1333,8 +1391,10 @@ bool VescInterface::fwEraseBootloader(bool fwdCan)
     return true;
 }
 
-bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fwdCan, bool isLzo)
+bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fwdCan, bool isLzo, bool autoDisconnect)
 {
+    newFirmware = Utility::removeFirmwareHeader(newFirmware);
+
     mIsLastFwBootloader = isBootloader;
     mFwUploadProgress = 0.0;
     mCancelFwUpload = false;
@@ -1368,7 +1428,7 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
             bool ignoreBefore = mIgnoreCanChange;
             mIgnoreCanChange = true;
 
-            for (auto d: devs) {
+            foreach (auto d, devs) {
                 mCommands->setSendCan(true, d);
                 FW_RX_PARAMS fwParamsCan;
                 Utility::getFwVersionBlocking(this, &fwParamsCan);
@@ -1545,7 +1605,7 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
         QByteArray in = newFirmware.mid(0, sz);
 
         bool hasData = false;
-        for (auto b: in) {
+        foreach (auto b, in) {
             if (b != (char)0xff) {
                 hasData = true;
                 break;
@@ -1642,7 +1702,7 @@ bool VescInterface::fwUpload(QByteArray &newFirmware, bool isBootloader, bool fw
     if (!isBootloader) {
         mCommands->jumpToBootloader(fwdCan, mLastFwParams.hwType, mLastFwParams.hw);
         Utility::sleepWithEventLoop(500);
-        disconnectPort();
+        if (autoDisconnect) disconnectPort();
     }
 
     return true;
@@ -3181,7 +3241,10 @@ void VescInterface::timerSlot()
                         emit statusMessage(tr("No firmware read response"), false);
                         emit messageDialog(tr("Read Firmware Version"),
                                            tr("Could not read firmware version. Make sure that "
-                                              "the selected port really belongs to the VESC. "),
+                                              "the selected port really belongs to the VESC. If "
+                                              "you are using UART, make sure that the port is enabled, "
+                                              "connected correctly (rx to tx and tx to rx) and uses "
+                                              "the correct baudrate"),
                                            false, false);
                         disconnectPort();
                     }
@@ -3236,6 +3299,8 @@ void VescInterface::timerSlot()
             }
 
             mDeserialFailedMessageShown = false;
+            mPacket->resetState();
+            mFwSwapDone = false;
         }
 
         emit portConnectedChanged();
@@ -3395,15 +3460,45 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
     mUuidStr.replace(" ", "");
     mFwSupportsConfiguration = false;
 
+    if (!mCommands->getSendCan()) {
+        mUuidStrLocal = mUuidStr;
+    }
+
+    if (mSettings.value("reconnectLastCan", true).toBool() &&
+            !mUuidStrLocal.isEmpty() && mLastFwUuids.contains(mUuidStrLocal)) {
+
+        auto pair = mLastFwUuids[mUuidStrLocal];
+
+        if (pair.second >= 0 && pair.first != mUuidStr && !mFwSwapDone) {
+            FW_RX_PARAMS pRx;
+            bool ok = Utility::getFwVersionBlockingCan(this, &pRx, pair.second, 1500);
+            if (ok && Utility::uuid2Str(pRx.uuid, false) == pair.first) {
+                mCommands->setSendCan(true, pair.second);
+                return;
+            }
+        }
+    }
+
+    if (!mUuidStrLocal.isEmpty()) {
+        int canId = -1;
+        if (mCommands->getSendCan()) {
+            canId = mCommands->getCanSendId();
+        }
+
+        mLastFwUuids[mUuidStrLocal] = qMakePair(mUuidStr, canId);
+    }
+
+    mFwSwapDone = true;
+
 #ifdef HAS_BLUETOOTH
     if (mBleUart->isConnected()) {
         if (params.isPaired && !hasPairedUuid(mUuidStr)) {
             disconnectPort();
             emitMessageDialog("Pairing",
-                              "This VESC is not paired to your local version of VESC Tool. You can either "
+                              "This device is not paired to your local version of VESC Tool. You can either "
                               "add the UUID to the pairing list manually, or connect over USB and set the app "
                               "pairing flag to false for this VESC. Then you can pair to this version of VESC "
-                              "tool, or leave the VESC unpaired.",
+                              "tool, or leave the device unpaired.",
                               false, false);
             return;
         }
@@ -3666,17 +3761,17 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         updateFwRx(false);
         mFwRetries = 0;
         disconnectPort();
-        emit messageDialog(tr("Error"), tr("The firmware on the connected VESC is too old. Please"
-                                           " update it using a programmer."), false, false);
+        emit messageDialog(tr("Error"), tr("The firmware on the connected device is too old. Please "
+                                           "update it using a programmer."), false, false);
     } else if (fw_connected > highest_supported) {
         mCommands->setLimitedMode(true);
         updateFwRx(true);
         if (!wasReceived) {
-            emit messageDialog(tr("Warning"), tr("The connected VESC has newer firmware than this version of"
-                                                " VESC Tool supports. It is recommended that you update VESC "
-                                                " Tool to the latest version. Alternatively, the firmware on"
-                                                " the connected VESC can be downgraded in the firmware page."
-                                                " Until then, limited communication mode will be used."), false, false);
+            emit messageDialog(tr("Warning"), tr("The connected device has newer firmware than this version of "
+                                                "VESC Tool supports. It is recommended that you update VESC "
+                                                "Tool to the latest version. Alternatively, the firmware on "
+                                                "the connected device can be downgraded in the firmware page. "
+                                                "Until then, limited communication mode will be used."), false, false);
         }
     } else if (!fwPairs.contains(fw_connected)) {
         if (fw_connected >= qMakePair(1, 1)) {
@@ -3684,21 +3779,24 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
             updateFwRx(true);
             if (!wasReceived) {
                 if (mFwSupportsConfiguration) {
-                    if (params.hwType == HW_TYPE_VESC) {
-                        emit messageDialog(tr("Warning"), tr("The connected VESC has old, but mostly compatible firmware. This is fine if "
-                                                             "your setup works properly.<br><br>"
-                                                             "Check out the firmware changelog (from the help menu) to decide if you want to "
-                                                             "use some of the new features that have been added after your firmware version. "
-                                                             "Keep in mind that you only should upgrade firmware if you have time to test "
-                                                             "it after the upgrade and carefully make sure that everything works as expected."),
+                    if (params.hwType == HW_TYPE_VESC && mSettings.value("showFwUpdateAvailable", true).toBool()) {
+                        emit messageDialog(tr("Firmware Update Available"),
+                                           tr("The connected VESC-based ESC has old, but mostly compatible firmware. This is "
+                                              "fine if your setup works properly.<br><br>"
+                                              "Check out the firmware changelog (from the help menu or firmware page) to decide "
+                                              "if you want to use some of the new features that have been added after your "
+                                              "firmware version was released. Keep in mind that you only should upgrade firmware "
+                                              "if you have time to test it after the upgrade and carefully make sure that "
+                                              "everything works as expected.<br><br>"
+                                              "This message can be disabled from the settings."),
                                            false, false);
                     }
                 } else {
                     if (params.hwType == HW_TYPE_VESC) {
-                        emit messageDialog(tr("Warning"), tr("The connected VESC has too old firmware. Since the"
-                                                             " connected VESC has firmware with bootloader support, it can be"
-                                                             " updated from the Firmware page."
-                                                             " Until then, limited communication mode will be used."), false, false);
+                        emit messageDialog(tr("Warning"), tr("The connected VESC-based ESC has too old firmware. Since the "
+                                                             "connected VESC has firmware with bootloader support, it can be "
+                                                             "updated from the Firmware page. "
+                                                             "Until then, limited communication mode will be used."), false, false);
                     }
                 }
             }
@@ -3707,16 +3805,16 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
             mFwRetries = 0;
             disconnectPort();
             if (!wasReceived) {
-                emit messageDialog(tr("Error"), tr("The firmware on the connected VESC is too old. Please"
-                                                   " update it using a programmer."), false, false);
+                emit messageDialog(tr("Error"), tr("The firmware on the connected device is too old. Please "
+                                                   "update it using a programmer."), false, false);
             }
         }
     } else {
         updateFwRx(true);
         if (fw_connected < highest_supported) {
             if (!wasReceived) {
-                emit messageDialog(tr("Warning"), tr("The connected VESC has compatible, but old"
-                                                    " firmware. It is recommended that you update it."), false, false);
+                emit messageDialog(tr("Warning"), tr("The connected device has compatible, but old "
+                                                    "firmware. It is recommended that you update it."), false, false);
             }
         }
 
@@ -3756,20 +3854,56 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
 
     if (params.isTestFw > 0 && !VT_IS_TEST_VERSION) {
         emitMessageDialog("Test Firmware",
-                          "The connected VESC has test firmware, and this is not a test build of VESC Tool. You should "
-                          "update the firmware urgently, as this is not a safe situation.",
+                          "The connected VESC-based device has test firmware and this is not a test build of VESC Tool. "
+                          "You should update the firmware urgently, this may not be a safe situation.",
                           false, false);
     }
 
-    // Read custom configs
-    if (params.customConfigNum > 0) {
-        while (!mCustomConfigs.isEmpty()) {
-            mCustomConfigs.last()->deleteLater();
-            mCustomConfigs.removeLast();
-        }
+    QString appDataLoc = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QString confCacheDir;
+    if (params.hwConfCrc > 0) {
+        confCacheDir = appDataLoc + "/hw_cache/" + QString::number(params.hwConfCrc);
+        QDir().mkpath(confCacheDir);
+    }
 
+    while (!mCustomConfigs.isEmpty()) {
+        mCustomConfigs.last()->deleteLater();
+        mCustomConfigs.removeLast();
+    }
+
+    // Read custom configs
+    if (!mIgnoreCustomConfigs && params.customConfigNum > 0) {
         bool readConfigsOk = true;
         for (int i = 0;i < params.customConfigNum;i++) {
+            QString confCacheFile;
+            if (!confCacheDir.isEmpty()) {
+                confCacheFile = confCacheDir + "/conf_custom_" + QString::number(i) + ".bin";
+            }
+
+            if (!confCacheFile.isEmpty()) {
+                QFile f(confCacheFile);
+                if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                    mCustomConfigs.append(new ConfigParams(this));
+                    connect(mCustomConfigs.last(), &ConfigParams::updateRequested, [this]() {
+                        mCommands->customConfigGet(mCustomConfigs.size() - 1, false);
+                    });
+                    connect(mCustomConfigs.last(), &ConfigParams::updateRequestDefault, [this]() {
+                        mCommands->customConfigGet(mCustomConfigs.size() - 1, true);
+                    });
+
+                    auto confData = f.readAll();
+                    f.close();
+
+                    if (mCustomConfigs.last()->loadCompressedParamsXml(confData)) {
+                        emitStatusMessage(QString("Got cached %1").arg(mCustomConfigs.last()->getLongName("hw_name")), true);
+                        continue;
+                    } else {
+                        mCustomConfigs.last()->deleteLater();
+                        mCustomConfigs.removeLast();
+                    }
+                }
+            }
+
             QByteArray configData;
             int confIndLast = 0;
             int lenConfLast = -1;
@@ -3818,7 +3952,16 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
                         break;
                     }
 
-                    emitStatusMessage(QString("Got custom config %1").arg(i), true);
+                    emitStatusMessage(QString("Got %1").arg(mCustomConfigs.last()->getLongName("hw_name")), true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(configData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
                 } else {
                     emitMessageDialog("Get Custom Config",
                                       "Could not read custom config from hardware",
@@ -3835,101 +3978,164 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
         mCustomConfigsLoaded = readConfigsOk;
     }
 
-    // Read qmlui
+    // Read qmlui HW
     if (mLoadQmlUiOnConnect && params.hasQmlHw) {
-        QByteArray qmlData;
-        int lenQmlLast = -1;
-        auto conn = connect(mCommands, &Commands::qmluiHwRx,
-                            [&](int lenQml, int ofsQml, QByteArray data) {
-            if (qmlData.size() <= ofsQml) {
-                qmlData.append(data);
-            }
-            lenQmlLast = lenQml;
-        });
+        bool cacheLoadOk = false;
 
-        auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
-            bool res = false;
+        QString confCacheFile;
+        if (!confCacheDir.isEmpty()) {
+            confCacheFile = confCacheDir + "/qml_hw.bin";
+        }
 
-            for (int j = 0;j < tries;j++) {
-                mCommands->qmlUiHwGet(size, offset);
-                res = Utility::waitSignal(mCommands, SIGNAL(qmluiHwRx(int,int,QByteArray)), timeout);
-                if (res) {
-                    break;
-                }
-            }
-            return res;
-        };
+        if (!confCacheFile.isEmpty()) {
+            QFile f(confCacheFile);
+            if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                auto qmlData = f.readAll();
+                f.close();
 
-        if (getQmlChunk(10, 0, 5, 1500)) {
-            while (qmlData.size() < lenQmlLast) {
-                int dataLeft = lenQmlLast - qmlData.size();
-                if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
-                    break;
-                }
-            }
-
-            if (qmlData.size() == lenQmlLast) {
                 mQmlHw = QString::fromUtf8(qUncompress(qmlData));
                 mQmlHwLoaded = true;
-                emitStatusMessage("Got qmlui HW", true);
-            } else {
-                mQmlHwLoaded = false;
-                emitMessageDialog("Get qmlui HW",
-                                  "Could not read qmlui HW from hardware",
-                                  false, false);
-                disconnect(conn);
+                emitStatusMessage("Got cached qmlui HW", true);
+                cacheLoadOk = true;
             }
         }
 
-        disconnect(conn);
+        if (!cacheLoadOk) {
+            QByteArray qmlData;
+            int lenQmlLast = -1;
+            auto conn = connect(mCommands, &Commands::qmluiHwRx,
+                                [&](int lenQml, int ofsQml, QByteArray data) {
+                if (qmlData.size() <= ofsQml) {
+                    qmlData.append(data);
+                }
+                lenQmlLast = lenQml;
+            });
+
+            auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
+                bool res = false;
+
+                for (int j = 0;j < tries;j++) {
+                    mCommands->qmlUiHwGet(size, offset);
+                    res = Utility::waitSignal(mCommands, SIGNAL(qmluiHwRx(int,int,QByteArray)), timeout);
+                    if (res) {
+                        break;
+                    }
+                }
+                return res;
+            };
+
+            if (getQmlChunk(10, 0, 5, 1500)) {
+                while (qmlData.size() < lenQmlLast) {
+                    int dataLeft = lenQmlLast - qmlData.size();
+                    if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
+                        break;
+                    }
+                }
+
+                if (qmlData.size() == lenQmlLast) {
+                    mQmlHw = QString::fromUtf8(qUncompress(qmlData));
+                    mQmlHwLoaded = true;
+                    emitStatusMessage("Got qmlui HW", true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(qmlData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
+                } else {
+                    mQmlHwLoaded = false;
+                    emitMessageDialog("Get qmlui HW",
+                                      "Could not read qmlui HW from hardware",
+                                      false, false);
+                    disconnect(conn);
+                }
+            }
+
+            disconnect(conn);
+        }
     }
 
+    // Read qmlui APP
     if (mLoadQmlUiOnConnect && params.hasQmlApp) {
-        QByteArray qmlData;
-        int lenQmlLast = -1;
-        auto conn = connect(mCommands, &Commands::qmluiAppRx,
-                            [&](int lenQml, int ofsQml, QByteArray data) {
-            if (qmlData.size() <= ofsQml) {
-                qmlData.append(data);
-            }
-            lenQmlLast = lenQml;
-        });
+        bool cacheLoadOk = false;
 
-        auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
-            bool res = false;
+        QString confCacheFile;
+        if (!confCacheDir.isEmpty()) {
+            confCacheFile = confCacheDir + "/qml_app.bin";
+        }
 
-            for (int j = 0;j < tries;j++) {
-                mCommands->qmlUiAppGet(size, offset);
-                res = Utility::waitSignal(mCommands, SIGNAL(qmluiAppRx(int,int,QByteArray)), timeout);
-                if (res) {
-                    break;
-                }
-            }
-            return res;
-        };
+        if (!confCacheFile.isEmpty()) {
+            QFile f(confCacheFile);
+            if (f.exists() && f.open(QIODevice::ReadOnly)) {
+                auto qmlData = f.readAll();
+                f.close();
 
-        if (getQmlChunk(10, 0, 5, 1500)) {
-            while (qmlData.size() < lenQmlLast) {
-                int dataLeft = lenQmlLast - qmlData.size();
-                if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
-                    break;
-                }
-            }
-
-            if (qmlData.size() == lenQmlLast) {
                 mQmlApp = QString::fromUtf8(qUncompress(qmlData));
                 mQmlAppLoaded = true;
-                emitStatusMessage("Got qmlui App", true);
-            } else {
-                mQmlAppLoaded = false;
-                emitMessageDialog("Get qmlui App",
-                                  "Could not read qmlui App from hardware",
-                                  false, false);
-                disconnect(conn);
+                emitStatusMessage("Got cached qmlui App", true);
+                cacheLoadOk = true;
             }
         }
 
-        disconnect(conn);
+        if (!cacheLoadOk) {
+            QByteArray qmlData;
+            int lenQmlLast = -1;
+            auto conn = connect(mCommands, &Commands::qmluiAppRx,
+                                [&](int lenQml, int ofsQml, QByteArray data) {
+                if (qmlData.size() <= ofsQml) {
+                    qmlData.append(data);
+                }
+                lenQmlLast = lenQml;
+            });
+
+            auto getQmlChunk = [&](int size, int offset, int tries, int timeout) {
+                bool res = false;
+
+                for (int j = 0;j < tries;j++) {
+                    mCommands->qmlUiAppGet(size, offset);
+                    res = Utility::waitSignal(mCommands, SIGNAL(qmluiAppRx(int,int,QByteArray)), timeout);
+                    if (res) {
+                        break;
+                    }
+                }
+                return res;
+            };
+
+            if (getQmlChunk(10, 0, 5, 1500)) {
+                while (qmlData.size() < lenQmlLast) {
+                    int dataLeft = lenQmlLast - qmlData.size();
+                    if (!getQmlChunk(dataLeft > 400 ? 400 : dataLeft, qmlData.size(), 5, 1500)) {
+                        break;
+                    }
+                }
+
+                if (qmlData.size() == lenQmlLast) {
+                    mQmlApp = QString::fromUtf8(qUncompress(qmlData));
+                    mQmlAppLoaded = true;
+                    emitStatusMessage("Got qmlui App", true);
+
+                    if (!confCacheFile.isEmpty()) {
+                        QFile f(confCacheFile);
+                        if (f.open(QIODevice::WriteOnly)) {
+                            f.write(qmlData);
+                            f.close();
+                            emitStatusMessage(QString("Cached %1").arg(confCacheFile), true);
+                        }
+                    }
+                } else {
+                    mQmlAppLoaded = false;
+                    emitMessageDialog("Get qmlui App",
+                                      "Could not read qmlui App from hardware",
+                                      false, false);
+                    disconnect(conn);
+                }
+            }
+
+            disconnect(conn);
+        }
     }
 
     if (params.hasQmlApp || params.hasQmlHw) {
@@ -3946,12 +4152,12 @@ void VescInterface::fwVersionReceived(FW_RX_PARAMS params)
 
 void VescInterface::appconfUpdated()
 {
-    emit statusMessage(tr("App configuration updated"), true);
+    emit statusMessage(tr("App config updated"), true);
 }
 
 void VescInterface::mcconfUpdated()
 {
-    emit statusMessage(tr("MC configuration updated"), true);
+    emit statusMessage(tr("Motor config updated"), true);
 
     if (isPortConnected() && fwRx()) {
         QPair<int, int> fw_connected = qMakePair(mLastFwParams.major, mLastFwParams.minor);
@@ -3963,8 +4169,8 @@ void VescInterface::mcconfUpdated()
                                   "version of VESC Tool. If it does not work properly you should run the motor wizard "
                                   "again or re-measure the parameters manually.\n\n"
                                   ""
-                                  "The main reason for this is that the motor resistance and induction values are defined "
-                                  "differently after firmware 5.03, so old configs will not run properly.",
+                                  "When updating firmware it is always best to reset to the default configuration and "
+                                  "run the detection and/or wizards again.",
                                   false);
             }
         }
@@ -3983,13 +4189,53 @@ void VescInterface::customConfigRx(int confId, QByteArray data)
         auto vb = VByteArray(data);
         if (params->deSerialize(vb)) {
             params->updateDone();
-            emitStatusMessage(tr("Custom config %1 updated").arg(confId), true);
+            emitStatusMessage(tr("%1 updated").arg(params->getLongName("hw_name")), true);
         } else {
             emitMessageDialog(tr("Custom Configuration"),
                               tr("Could not deserialize custom config %1").arg(confId),
                               false, false);
         }
     }
+}
+
+bool VescInterface::showFwUpdateAvailable() const
+{
+    return mSettings.value("showFwUpdateAvailable", true).toBool();
+}
+
+void VescInterface::setShowFwUpdateAvailable(bool set)
+{
+    mSettings.setValue("showFwUpdateAvailable", set);
+}
+
+bool VescInterface::ignoreCustomConfigs() const
+{
+    return mIgnoreCustomConfigs;
+}
+
+void VescInterface::setIgnoreCustomConfigs(bool newIgnoreCustomConfigs)
+{
+    mIgnoreCustomConfigs = newIgnoreCustomConfigs;
+}
+
+bool VescInterface::reconnectLastCan()
+{
+    return mSettings.value("reconnectLastCan", true).toBool();
+}
+
+void VescInterface::setReconnectLastCan(bool set)
+{
+    mSettings.setValue("reconnectLastCan", set);
+}
+
+bool VescInterface::scanCanOnConnect()
+{
+    return mSettings.value("scanCanOnConnect", true).toBool();
+}
+
+void VescInterface::setScanCanOnConnect(bool set)
+{
+    mSettings.setValue("scanCanOnConnect", set);
 }
 
 int VescInterface::getLastTcpHubPort() const
@@ -4290,17 +4536,17 @@ bool VescInterface::confRestoreBackup(bool can)
 
                 if (!txMc) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing MC configuration to " + uuid + ".", false, false);
+                                      "No response when writing Motor config to " + uuid + ".", false, false);
                 }
 
                 if (!txApp) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing app configuration to " + uuid + ".", false, false);
+                                      "No response when writing App config to " + uuid + ".", false, false);
                 }
 
                 if (!txCustom) {
                     emitMessageDialog("Restore Configuration",
-                                      "No response when writing" + pCustom->getParam("hw_name")->longName + "configuration to " + uuid + ".", false, false);
+                                      "No response when writing " + pCustom->getLongName("hw_name") + " configuration to " + uuid + ".", false, false);
                 }
 
                 return txMc && txApp;

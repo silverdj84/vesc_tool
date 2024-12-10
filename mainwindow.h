@@ -99,6 +99,7 @@ private slots:
     void on_actionReconnect_triggered();
     void on_actionDisconnect_triggered();
     void on_actionReboot_triggered();
+    void on_actionShutdown_triggered();
     void on_stopButton_clicked();
     void on_fullBrakeButton_clicked();
     void on_actionReadMcconf_triggered();
@@ -139,7 +140,7 @@ private slots:
     void on_actionTerminalClear_triggered();
     void on_actionTerminalPrintThreads_triggered();
     void on_actionTerminalDRVResetLatchedFaults_triggered();
-    void on_actionCanFwd_toggled(bool arg1);
+    void on_actionCanFwd_triggered();
     void on_actionSafetyInformation_triggered();
     void on_actionWarrantyStatement_triggered();
     void on_actionVESCToolChangelog_triggered();
@@ -183,6 +184,7 @@ private:
     QTimer mPollImuTimer;
     QTimer mPollBmsTimer;
     QTimer mPortTimer;
+    QTimer mSettingSyncTimer;
 
     PageWelcome *mPageWelcome;
     PageConnection *mPageConnection;
@@ -223,7 +225,6 @@ private:
     PageScripting *mPageScripting;
     PageLisp *mPageLisp;
     PageEspProg *mPageEspProg;
-    QTabWidget *mPageVESCDev;
     PageDisplayTool *mPageDisplayTool;
     Preferences *mPreferences;
 

@@ -50,7 +50,6 @@ Commands::Commands(QObject *parent) : QObject(parent)
     mTimeoutDecAdc = 0;
     mTimeoutDecChuk = 0;
     mTimeoutPingCan = 0;
-    mTimeoutCustomConf = 0;
     mTimeoutBmsVal = 0;
 
     mFilePercentage = 0.0;
@@ -157,6 +156,10 @@ void Commands::processPacket(QByteArray data)
 
         if (vb.size() >= 1) {
             params.fwName = vb.vbPopFrontString();
+        }
+
+        if (vb.size() >= 4) {
+            params.hwConfCrc = vb.vbPopFrontUint32();
         }
 
         emit fwVersionReceived(params);
@@ -314,7 +317,26 @@ void Commands::processPacket(QByteArray data)
 
                 if (mCheckNextMcConfig) {
                     mCheckNextMcConfig = false;
-                    emit mcConfigCheckResult(mMcConfig->checkDifference(&mMcConfigLast));
+                    auto diff = mMcConfig->checkDifference(&mMcConfigLast);
+
+                    // Kind of a hack: Remove offsets from check if they are not supposed
+                    // to be updated.
+                    if (mMcConfig->hasParam("foc_offsets_cal_mode") &&
+                        !(mMcConfig->getParamInt("foc_offsets_cal_mode") & (1 << 1))) {
+                        diff.removeAll("foc_offsets_current__0");
+                        diff.removeAll("foc_offsets_current__1");
+                        diff.removeAll("foc_offsets_current__2");
+
+                        diff.removeAll("foc_offsets_voltage__0");
+                        diff.removeAll("foc_offsets_voltage__1");
+                        diff.removeAll("foc_offsets_voltage__2");
+
+                        diff.removeAll("foc_offsets_voltage_undriven__0");
+                        diff.removeAll("foc_offsets_voltage_undriven__1");
+                        diff.removeAll("foc_offsets_voltage_undriven__2");
+                    }
+
+                    emit mcConfigCheckResult(diff);
                 }
             } else {
                 emit deserializeConfigFailed(true, false);
@@ -399,15 +421,15 @@ void Commands::processPacket(QByteArray data)
         break;
 
     case COMM_SET_MCCONF:
-        emit ackReceived("MCCONF Write OK");
+        emit ackReceived("Motor config write OK");
         break;
 
     case COMM_SET_APPCONF:
-        emit ackReceived("APPCONF Write OK");
+        emit ackReceived("App config write OK");
         break;
 
     case COMM_SET_APPCONF_NO_STORE:
-        emit ackReceived("APPCONF_NO_STORE Write OK");
+        emit ackReceived("App config set OK");
         break;
 
     case COMM_CUSTOM_APP_DATA:
@@ -596,9 +618,7 @@ void Commands::processPacket(QByteArray data)
             values.q3 = vb.vbPopFrontDouble32Auto();
         }
         if (vb.size() >= 1) {
-            if (mask & (uint32_t(1) << 16)) {
-                values.vesc_id = vb.vbPopFrontUint8();
-            }
+            values.vesc_id = vb.vbPopFrontUint8();
         }
 
         emit valuesImuReceived(values, mask);
@@ -724,19 +744,28 @@ void Commands::processPacket(QByteArray data)
             val.wh_cnt_dis_total = vb.vbPopFrontDouble32Auto();
         }
 
+        if (vb.size() >= 2) {
+            val.pressure = vb.vbPopFrontDouble16(1e-1);
+        }
+
         val.updateTimeStamp();
 
         emit bmsValuesRx(val);
     } break;
 
-    case COMM_SET_CUSTOM_CONFIG:
-        emit ackReceived("COMM_SET_CUSTOM_CONFIG Write OK");
-        break;
+    case COMM_SET_CUSTOM_CONFIG: {
+        int confId = vb.vbPopFrontUint8();
+        emit customConfigAckReceived(confId);
+    } break;
 
     case COMM_GET_CUSTOM_CONFIG:
     case COMM_GET_CUSTOM_CONFIG_DEFAULT: {
-        mTimeoutCustomConf = 0;
         int confInd = vb.vbPopFrontInt8();
+
+        if (mTimeoutCustomConf.size() > confInd) {
+            mTimeoutCustomConf[confInd] = 0;
+        }
+
         emit customConfigRx(confInd, vb);
     } break;
 
@@ -1430,6 +1459,15 @@ void Commands::reboot()
     emitData(vb);
 }
 
+void Commands::shutdown()
+{
+    VByteArray vb;
+    vb.vbAppendInt8(COMM_SHUTDOWN);
+    vb.vbAppendInt8(0);
+    vb.vbAppendInt8(0);
+    emitData(vb);
+}
+
 void Commands::sendAlive()
 {
     VByteArray vb;
@@ -1978,11 +2016,15 @@ void Commands::customConfigGetChunk(int confInd, int len, int offset)
 
 void Commands::customConfigGet(int confInd, bool isDefault)
 {
-    if (mTimeoutCustomConf > 0) {
+    while (mTimeoutCustomConf.size() <= confInd) {
+        mTimeoutCustomConf.append(0);
+    }
+
+    if (mTimeoutCustomConf[confInd] > 0) {
         return;
     }
 
-    mTimeoutCustomConf = mTimeoutCount;
+    mTimeoutCustomConf[confInd] = mTimeoutCount;
 
     VByteArray vb;
     vb.vbAppendUint8(isDefault ? COMM_GET_CUSTOM_CONFIG_DEFAULT : COMM_GET_CUSTOM_CONFIG);
@@ -2156,10 +2198,11 @@ void Commands::lispSetRunning(bool running)
     emitData(vb);
 }
 
-void Commands::lispGetStats()
+void Commands::lispGetStats(bool all)
 {
     VByteArray vb;
     vb.vbAppendUint8(COMM_LISP_GET_STATS);
+    vb.vbAppendInt8(all);
     emitData(vb);
 }
 
@@ -2255,7 +2298,10 @@ void Commands::timerSlot()
             qWarning() << "CAN ping timed out";
         }
     }
-    if (mTimeoutCustomConf > 0) mTimeoutCustomConf--;
+    for (int i = 0;i < mTimeoutCustomConf.size();i++) {
+        if (mTimeoutCustomConf.at(i) > 0) mTimeoutCustomConf[i]--;
+    }
+
     if (mTimeoutBmsVal > 0) mTimeoutBmsVal--;
     if (mTimeoutStats > 0) mTimeoutStats--;
 }

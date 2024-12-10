@@ -24,6 +24,9 @@
 #include <QFileDialog>
 #include <QProgressDialog>
 #include <QDirIterator>
+#include <QDirIterator>
+#include <QScrollBar>
+
 
 PageVescPackage::PageVescPackage(QWidget *parent) :
     QWidget(parent),
@@ -57,16 +60,38 @@ PageVescPackage::PageVescPackage(QWidget *parent) :
     on_outputRefreshButton_clicked();
 
     reloadArchive();
+
+    mDescriptionUpdated = true;
+    connect(ui->descriptionEdit, &QMarkdownTextEdit::textChanged, [this]() {
+        mDescriptionUpdated = true;
+    });
+
+    mPreviewTimer = new QTimer(this);
+    mPreviewTimer->start(500);
+    connect(mPreviewTimer, &QTimer::timeout, [this]() {
+        if (mDescriptionUpdated) {
+            mDescriptionUpdated = false;
+            auto posOld = ui->descriptionBrowser->verticalScrollBar()->value();
+            ui->descriptionBrowser->setHtml(
+                        Utility::md2html(ui->descriptionEdit->document()->toPlainText()));
+            ui->descriptionBrowser->verticalScrollBar()->setValue(posOld);
+        }
+    });
 }
 
 PageVescPackage::~PageVescPackage()
+{
+    saveStateToSettings();
+    delete ui;
+}
+
+void PageVescPackage::saveStateToSettings()
 {
     QSettings set;
     set.setValue("pagevescpackage/lastpkgload", ui->loadEdit->text());
     set.setValue("pagevescpackage/lastlisp", ui->lispEdit->text());
     set.setValue("pagevescpackage/lastqml", ui->qmlEdit->text());
     set.setValue("pagevescpackage/lastoutput", ui->outputEdit->text());
-    delete ui;
 }
 
 VescInterface *PageVescPackage::vesc() const
@@ -127,8 +152,27 @@ void PageVescPackage::on_chooseOutputButton_clicked()
             filename += ".vescpkg";
         }
 
-        ui->outputEdit->setText(filename);
-        on_outputRefreshButton_clicked();
+        if (QFile::exists(filename)) {
+            if (ui->descriptionEdit->toPlainText().size() > 10) {
+                QMessageBox::StandardButton reply =
+                        QMessageBox::warning(this,
+                                             tr("Replace Content"),
+                                             tr("Opening an existing package will replace the content "
+                                                "in the editor. Do you want to continue?"),
+                                             QMessageBox::Ok | QMessageBox::Cancel);
+
+                if (reply == QMessageBox::Ok) {
+                    ui->outputEdit->setText(filename);
+                    on_outputRefreshButton_clicked();
+                }
+            } else {
+                ui->outputEdit->setText(filename);
+                on_outputRefreshButton_clicked();
+            }
+        } else {
+            ui->outputEdit->setText(filename);
+            on_saveButton_clicked();
+        }
     }
 }
 
@@ -182,14 +226,13 @@ void PageVescPackage::on_saveButton_clicked()
     }
 
     pkg.name = ui->nameEdit->text();
-    pkg.description = ui->descriptionEdit->document()->toHtml();
+    pkg.description_md = ui->descriptionEdit->document()->toPlainText();
+    pkg.description = Utility::md2html(pkg.description_md);
 
     file.write(mLoader.packVescPackage(pkg));
     file.close();
 
-    mVesc->emitMessageDialog(tr("Save Package"),
-                             tr("Package Saved"),
-                             true, false);
+    mVesc->emitStatusMessage(tr("Package Saved"), true);
 }
 
 void PageVescPackage::on_loadRefreshButton_clicked()
@@ -200,7 +243,18 @@ void PageVescPackage::on_loadRefreshButton_clicked()
     }
 
     auto pkg = mLoader.unpackVescPackage(f.readAll());
-    ui->loadBrowser->document()->setHtml(pkg.description);
+
+    if (!pkg.loadOk && mVesc) {
+        mVesc->emitMessageDialog(tr("Open Package"), tr("Package is not valid."), false);
+        return;
+    }
+
+    QString line1 = QTextStream(&pkg.description).readLine();
+    if (line1.contains("<!DOCTYPE HTML PUBLIC", Qt::CaseInsensitive)) {
+        ui->loadBrowser->document()->setHtml(pkg.description);
+    } else {
+        ui->loadBrowser->document()->setHtml(Utility::md2html(pkg.description));
+    }
 }
 
 void PageVescPackage::on_writeButton_clicked()
@@ -218,7 +272,16 @@ void PageVescPackage::on_writeButton_clicked()
     dialog.setWindowModality(Qt::WindowModal);
     dialog.show();
 
+    QTimer closeStopTimer;
+    closeStopTimer.start(100);
+    auto conn1 = connect(&closeStopTimer, &QTimer::timeout, [&dialog]() {
+        if (!dialog.isVisible()) {
+            dialog.show();
+        }
+    });
+
     mLoader.installVescPackageFromPath(ui->loadEdit->text());
+    disconnect(conn1);
 }
 
 void PageVescPackage::on_outputRefreshButton_clicked()
@@ -229,7 +292,27 @@ void PageVescPackage::on_outputRefreshButton_clicked()
     }
 
     auto pkg = mLoader.unpackVescPackage(f.readAll());
-    ui->descriptionEdit->document()->setHtml(pkg.description);
+
+    if (!pkg.loadOk) {
+        mVesc->emitMessageDialog(tr("Open Package"), tr("Package is not valid."), false);
+        return;
+    }
+
+    if (!pkg.description_md.isEmpty()) {
+        ui->descriptionEdit->document()->setPlainText(pkg.description_md);
+    } else {
+        QString line1 = QTextStream(&pkg.description).readLine();
+        if (line1.contains("<!DOCTYPE HTML PUBLIC", Qt::CaseInsensitive)) {
+            ui->descriptionEdit->document()->setHtml(pkg.description);
+            QString md = ui->descriptionEdit->document()->toMarkdown();
+            ui->descriptionEdit->document()->setPlainText(md);
+        } else {
+            ui->descriptionEdit->document()->setPlainText(pkg.description);
+        }
+    }
+
+    mDescriptionUpdated = true;
+
     ui->nameEdit->setText(pkg.name);
 }
 
@@ -300,7 +383,17 @@ void PageVescPackage::on_installButton_clicked()
         dialog.setWindowModality(Qt::WindowModal);
         dialog.show();
 
+        QTimer closeStopTimer;
+        closeStopTimer.start(100);
+        auto conn1 = connect(&closeStopTimer, &QTimer::timeout, [&dialog]() {
+            if (!dialog.isVisible()) {
+                dialog.show();
+            }
+        });
+
         mLoader.installVescPackage(mCurrentPkg);
+
+        disconnect(conn1);
 
         mVesc->emitMessageDialog(tr("Install Package"),
                                  tr("Installation Done!"),
@@ -319,7 +412,7 @@ void PageVescPackage::reloadArchive()
     ui->applicationList->clear();
     ui->libraryList->clear();
 
-    for (auto p: pList) {
+    foreach (auto p, pList) {
         auto pVal = p.value<VescPackage>();
         QListWidgetItem *item = new QListWidgetItem;
         item->setText(pVal.name);
@@ -336,7 +429,14 @@ void PageVescPackage::reloadArchive()
 void PageVescPackage::packageSelected(VescPackage pkg)
 {
     mCurrentPkg = pkg;
-    ui->storeBrowser->document()->setHtml(pkg.description);
+
+    QString line1 = QTextStream(&pkg.description).readLine();
+    if (line1.contains("<!DOCTYPE HTML PUBLIC", Qt::CaseInsensitive)) {
+        ui->storeBrowser->document()->setHtml(pkg.description);
+    } else {
+        ui->storeBrowser->document()->setHtml(Utility::md2html(pkg.description));
+    }
+
     ui->installButton->setEnabled(!pkg.isLibrary);
     if (ui->installButton->isEnabled()) {
         ui->installButton->setToolTip("");

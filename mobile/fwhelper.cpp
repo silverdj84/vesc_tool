@@ -59,6 +59,18 @@ QVariantMap FwHelper::getHardwares(FW_RX_PARAMS params, QString hw)
         hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/VESC Express");
     } else if (params.hw == "Devkit C3") {
         hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/DevKitM-1");
+    } else if (params.hw == "STR-DCDC") {
+        hws.insert(params.hw, "://res/firmwares_custom_module/str-dcdc");
+    } else if (params.hw == "VBMS32") {
+        hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/VBMS32");
+    } else if (params.hw == "STR365 IO") {
+        hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/STR365");
+    } else if (params.hw == "VDisp") {
+        hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/VDisp");
+    } else if (params.hw == "VDisp Dual") {
+        hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/VDisp Dual");
+    } else if (params.hw == "BMS RB") {
+        hws.insert(params.hw, "://res/firmwares_esp/ESP32-C3/BMS RB");
     }
 
     return hws;
@@ -105,7 +117,7 @@ QVariantMap FwHelper::getBootloaders(FW_RX_PARAMS params, QString hw)
             if (params.hw == "hm1") {
                 blDir = "://res/bootloaders_bms";
             } else {
-                blDir = "://res/bootloaders_custom_module";
+                blDir = "://res/bootloaders_custom_module/stm32g431";
             }
         }
         break;

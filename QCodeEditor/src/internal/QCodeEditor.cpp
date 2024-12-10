@@ -334,22 +334,33 @@ void QCodeEditor::highlightSearch(QList<QTextEdit::ExtraSelection> &extraSelecti
 
     auto tc2 = document()->find(m_searchStrNow, tc, flags);
     auto tcLast = tc2;
+    auto tcFirst = tc2;
+
+    bool lastAbort = false;
+    m_searchMatches = 0;
 
     while (!tc2.isNull()) {
         ExtraSelection sel;
         sel.cursor = tc2;
         sel.format = format;
         extraSelection.append(sel);
+        m_searchMatches++;
 
         if (m_searchSelectNext && tc2.position() > textCursor().position()) {
             m_searchSelectNext = false;
             setTextCursor(tc2);
         }
 
-        if (m_searchSelectPrev && tc2.position() >= textCursor().position()) {
-            m_searchSelectPrev = false;
+        if (!lastAbort && m_searchSelectPrev &&
+                tc2.position() >= textCursor().position()) {
+
             if (!tcLast.isNull()) {
-                setTextCursor(tcLast);
+                if (tcLast.position() == textCursor().position()) {
+                    lastAbort = true;
+                } else {
+                    m_searchSelectPrev = false;
+                    setTextCursor(tcLast);
+                }
             }
         }
 
@@ -357,14 +368,21 @@ void QCodeEditor::highlightSearch(QList<QTextEdit::ExtraSelection> &extraSelecti
         tc2 = document()->find(m_searchStrNow, tc2, flags);
     }
 
-    m_searchSelectNext = false;
+    if (m_searchSelectNext && !tcFirst.isNull()) {
+        m_searchSelectNext = false;
 
-    if (m_searchSelectPrev && !tcLast.isNull()) {
-        m_searchSelectPrev = false;
-        setTextCursor(tcLast);
+        if (!tcFirst.isNull()) {
+            setTextCursor(tcFirst);
+        }
     }
 
-    m_searchSelectPrev = false;
+    if (m_searchSelectPrev) {
+        m_searchSelectPrev = false;
+
+        if (!tcLast.isNull()) {
+            setTextCursor(tcLast);
+        }
+    }
 }
 
 void QCodeEditor::highlightCurrentLine(QList<QTextEdit::ExtraSelection>& extraSelection)
@@ -548,43 +566,78 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
         int lineStart = tcStart.blockNumber();
         int lineEnd = tcEnd.blockNumber();
 
+        QString keyText = QKeySequence(e->key()).toString();
+
         // Toggle block comment
         if (e->text() == "\u001F" ||
-                (e->modifiers() & Qt::ControlModifier) && e->text() == "#") {
+                ((e->modifiers() & Qt::ControlModifier) && keyText == "#") ||
+                ((e->modifiers() & Qt::ControlModifier) && keyText == "/")) {
             for (int i = lineStart;i <= lineEnd;i++) {
                 auto tc = textCursor();
 
-                int posStart = 0;
-                tc.setPosition(posStart++);
-                while (!tc.atEnd()) {
-                    if (tc.blockNumber() == i) {
-                        tc.select(QTextCursor::LineUnderCursor);
-                        auto line = tc.selectedText();
-                        auto line2 = line;
-                        line2.replace(" ", "");
-                        line2.replace("\t", "");
-                        if (line2.startsWith(m_commentStr)) {
-                            line.replace(line.indexOf(m_commentStr.at(0)), m_commentStr.size(), "");
-                        } else {
-                            line.prepend(m_commentStr);
-                        }
+                tc.setPosition(0);
+                tc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, i);
+                tc.select(QTextCursor::LineUnderCursor);
+                auto line = tc.selectedText();
 
-                        tc.insertText(line);
+                int commentPos = -1;
+                int charPos = -1;
+
+                for (int i = 0;i < line.length();i++) {
+                    if (line.at(i) != " " && line.at(i) != "\t") {
+                        charPos = i;
                         break;
                     }
-
-                    tc.setPosition(posStart++);
                 }
+
+                commentPos = line.indexOf(m_commentStr);
+                if (commentPos > charPos) {
+                    commentPos = -1;
+                }
+
+                if (commentPos >= 0) {
+                    if (line.length() <= (commentPos + m_commentStr.length()) ||
+                            line.at(commentPos + m_commentStr.length()) == " " ||
+                            line.at(commentPos + m_commentStr.length()) == "\t") {
+                        commentPos = -1;
+                        charPos = -1;
+                    }
+                }
+
+                if (commentPos >= 0) {
+                    line.replace(commentPos, m_commentStr.length(), "");
+                } else if (charPos >= 0) {
+                    line.insert(charPos, m_commentStr);
+                }
+
+                tc.insertText(line);
             }
 
             return;
         }
 
+        // Duplicate line
+        if (e->key() == Qt::Key_D &&
+            (e->modifiers() & Qt::ControlModifier) &&
+            (e->modifiers() & Qt::ShiftModifier)) {
+            auto tc = textCursor();
+            auto linepos = tc.positionInBlock();
+            tc.movePosition(QTextCursor::StartOfBlock, QTextCursor::MoveAnchor);
+            tc.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor);
+            auto line = tc.selectedText();
+            tc.movePosition(QTextCursor::StartOfBlock, QTextCursor::MoveAnchor);
+            tc.insertText(line);
+            tc.movePosition(QTextCursor::PreviousBlock, QTextCursor::MoveAnchor);
+            tc.movePosition(QTextCursor::Right, QTextCursor::MoveAnchor, linepos);
+            setTextCursor(tc);
+            return;
+        }
+
+        bool doSave = false;
+
         if (e->modifiers() == Qt::ControlModifier) {
             if (e->key() == Qt::Key_S) {
-                emit saveTriggered();
-                updateExtraSelection();
-                return;
+                doSave = true;
             } else if (e->key() == Qt::Key_E) {
                 emit runEmbeddedTriggered();
                 updateExtraSelection();
@@ -646,10 +699,9 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
         }
 
         // Auto-indent selected line or block
-        if (indentNext || (e->key() == Qt::Key_I && e->modifiers() == Qt::ControlModifier)) {
+        if (doSave || indentNext || (e->key() == Qt::Key_I && e->modifiers() == Qt::ControlModifier)) {
             auto txtOld = toPlainText();
             int indentNow = 0;
-            bool isComment = false;
 
             int lineNum = -1;
             foreach (auto line, txtOld.split("\n")) {
@@ -668,16 +720,10 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
                     removeTrailing = false;
                 }
 
-                if (isComment) {
-                    if (line.contains("*/") && !line.contains("/*")) {
-                        isComment = false;
-                    }
-
+                // Always remove trailing whitespaces on save
+                if (doSave) {
                     indent = false;
-                } else {
-                    if (line.contains("/*") && !line.contains("*/")) {
-                        isComment = true;
-                    }
+                    removeTrailing = true;
                 }
 
                 if (indent) {
@@ -719,19 +765,19 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
 
                 if (indent || removeTrailing) {
                     auto tc = textCursor();
-                    int posStart = 0;
-                    tc.setPosition(posStart++);
-                    while (!tc.atEnd()) {
-                        if (tc.blockNumber() == lineNum) {
-                            tc.select(QTextCursor::LineUnderCursor);
-                            if (tc.selectedText() != line) {
-                                tc.insertText(line);
-                            }
-                            break;
-                        }
-                        tc.setPosition(posStart++);
+
+                    tc.setPosition(0);
+                    tc.movePosition(QTextCursor::Down, QTextCursor::MoveAnchor, lineNum);
+                    tc.select(QTextCursor::LineUnderCursor);
+                    if (tc.selectedText() != line) {
+                        tc.insertText(line);
                     }
                 }
+            }
+
+            if (doSave) {
+                emit saveTriggered();
+                updateExtraSelection();
             }
 
             return;
@@ -813,20 +859,6 @@ void QCodeEditor::keyPressEvent(QKeyEvent* e) {
                 {
                     insertPlainText(el.second);
                     moveCursor(QTextCursor::MoveOperation::Left);
-                    break;
-                }
-
-                // If it's close brace - check parentheses
-                if (el.second == e->text())
-                {
-                    auto symbol = charUnderCursor();
-
-                    if (symbol == el.second)
-                    {
-                        textCursor().deletePreviousChar();
-                        moveCursor(QTextCursor::MoveOperation::Right);
-                    }
-
                     break;
                 }
             }
@@ -1065,6 +1097,11 @@ QString QCodeEditor::getCompletionWordNow(int *linePosStart, int *linePosEnd)
     }
 
     return res;
+}
+
+int QCodeEditor::searchMatches() const
+{
+    return m_searchMatches;
 }
 
 bool QCodeEditor::highlightBlocks() const

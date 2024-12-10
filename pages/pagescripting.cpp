@@ -154,12 +154,18 @@ PageScripting::PageScripting(QWidget *parent) :
 
 PageScripting::~PageScripting()
 {
+    saveStateToSettings();
+    delete ui;
+}
+
+void PageScripting::saveStateToSettings()
+{
     QSettings set;
     {
         set.remove("pagescripting/recentfiles");
         set.beginWriteArray("pagescripting/recentfiles");
         int ind = 0;
-        for (auto f: mRecentFiles) {
+        foreach (auto f, mRecentFiles) {
             set.setArrayIndex(ind);
             set.setValue("path", f);
             ind++;
@@ -176,8 +182,6 @@ PageScripting::~PageScripting()
         }
         set.endArray();
     }
-
-    delete ui;
 }
 
 VescInterface *PageScripting::vesc() const
@@ -242,6 +246,25 @@ void PageScripting::on_stopButton_clicked()
     mQmlUi.stopCustomGui();
 }
 
+void PageScripting::on_reloadAndRunButton_clicked()
+{
+    QFile file(ui->mainEdit->fileNow());
+
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(this, "Open QML File",
+                              "Could not open example for reading");
+        return;
+    }
+
+    ui->mainEdit->codeEditor()->setPlainText(file.readAll());
+
+    file.close();
+
+    ui->qmlWidget->setSource(QUrl(QLatin1String("qrc:/res/qml/DynamicLoader.qml")));
+    ui->qmlWidget->engine()->clearComponentCache();
+    emit reloadQml(qmlToRun());
+}
+
 void PageScripting::on_runWindowButton_clicked()
 {
     ui->runWindowButton->setEnabled(false);
@@ -289,9 +312,9 @@ void PageScripting::openRecentList()
         }
 
         mRecentFiles.removeAll(fileName);
-        mRecentFiles.append(fileName);
+        mRecentFiles.prepend(fileName);
         updateRecentList();
-        ui->recentList->setCurrentRow(ui->recentList->count() - 1);
+        ui->recentList->setCurrentRow(0);
 
         file.close();
     } else {
@@ -400,10 +423,11 @@ void PageScripting::makeEditorConnections(ScriptEditor *editor)
     connect(editor->codeEditor(), &QCodeEditor::clearConsoleTriggered, [this]() {
         ui->debugEdit->clear();
     });
-    connect(editor, &ScriptEditor::fileOpened, [this](QString fileName) {
+    connect(editor, &ScriptEditor::fileOpened, [editor, this](QString fileName) {
         mRecentFiles.removeAll(fileName);
-        mRecentFiles.append(fileName);
+        mRecentFiles.prepend(fileName);
         updateRecentList();
+        setEditorClean(editor);
     });
     connect(editor, &ScriptEditor::fileSaved, [editor, this](QString fileName) {
         if (mVesc) {
@@ -411,7 +435,7 @@ void PageScripting::makeEditorConnections(ScriptEditor *editor)
         }
 
         mRecentFiles.removeAll(fileName);
-        mRecentFiles.append(fileName);
+        mRecentFiles.prepend(fileName);
         updateRecentList();
 
         setEditorClean(editor);
@@ -688,19 +712,21 @@ bool PageScripting::eraseQml(int size, bool reload)
 void PageScripting::on_helpButton_clicked()
 {
     QString html = "<b>Keyboard Commands</b><br>"
-                   "Ctrl + '+'   : Increase font size<br>"
-                   "Ctrl + '-'   : Decrease font size<br>"
-                   "Ctrl + space : Show auto-complete suggestions<br>"
-                   "Ctrl + '/'   : Toggle auto-comment on line or block<br>"
-                   "Ctrl + 'i'   : Auto-indent selected line or block<br>"
-                   "Ctrl + 'f'   : Open search (and replace) bar<br>"
-                   "Ctrl + 'e'   : Run or restart embedded<br>"
-                   "Ctrl + 'w'   : Run or restart window<br>"
-                   "Ctrl + 'q'   : Stop code<br>"
-                   "Ctrl + 'd'   : Clear console<br>"
-                   "Ctrl + 's'   : Save file<br>";
+                   "Ctrl + '+'         : Increase font size<br>"
+                   "Ctrl + '-'         : Decrease font size<br>"
+                   "Ctrl + space       : Show auto-complete suggestions<br>"
+                   "Ctrl + '/'         : Toggle auto-comment on line or block<br>"
+                   "Ctrl + '#'         : Toggle auto-comment on line or block<br>"
+                   "Ctrl + 'i'         : Auto-indent selected line or block<br>"
+                   "Ctrl + 'f'         : Open search (and replace) bar<br>"
+                   "Ctrl + 'e'         : Run or restart embedded<br>"
+                   "Ctrl + 'w'         : Run or restart window<br>"
+                   "Ctrl + 'q'         : Stop code<br>"
+                   "Ctrl + 'd'         : Clear console<br>"
+                   "Ctrl + 's'         : Save file<br>"
+                   "Ctrl + Shift + 'd' : Duplicate current line<br>";
 
-    HelpDialog::showHelpMonospace(this, "VESC Tool Script Editor", html.replace(" ","&nbsp;"));
+    HelpDialog::showHelpMonospace(this, "VESC Tool Script Editor", html);
 }
 
 void PageScripting::on_exportCArrayHwButton_clicked()
